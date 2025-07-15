@@ -81,7 +81,7 @@ async def handle_incoming_call(request: Request):
     response = VoiceResponse()
     response.say("Hello! This is Cosmo from Redcliffe Labs. Let's book your diagnostic test.")
     connect = Connect()
-    connect.stream(url='wss://your-ngrok-url/media-stream')
+    connect.stream(url='wss://cute-cups-roll.loca.lt/media-stream')
     response.append(connect)
     return HTMLResponse(content=str(response), media_type="application/xml")
 
@@ -105,7 +105,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
             elif data.get("event") == "start":
                 print("Stream started.")
-            elif data.get("event") == "stop":
+            elif data.get("event") == "stop":*
                 print("Stream stopped.")
 
 async def initialize_session(openai_ws):
