@@ -1,28 +1,25 @@
 import os
 import json
-import base64
-import asyncio
 import sqlite3
+import asyncio
 from fastapi import FastAPI, WebSocket, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.websockets import WebSocketDisconnect
-from twilio.twiml.voice_response import VoiceResponse, Connect
+from fastapi.responses import JSONResponse, HTMLResponse
 from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
-import requests
 from datetime import datetime, timedelta
+import requests
 import websockets
 
+# Load environment variables
 load_dotenv()
 app = FastAPI()
 
 # Environment variables
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 SMS_KEY = os.getenv('SMS_KEY')
 PORT = int(os.getenv('PORT', 3000))
 
-# Database setup
+# SQLite DB setup
 DB_PATH = "bookings.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
@@ -37,54 +34,57 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS bookings (
 )''')
 conn.commit()
 
-# System message for AI
+# AI system prompt
 SYSTEM_MESSAGE = """
 You are Cosmo, a healthcare expert helping users book diagnostic tests.
-Ask for: Phone, City, Test Name, Date, Time, Collection Type (Home/In-Clinic)
-After booking, summarize and confirm the booking.
+Ask for: Phone, City, Test Name, Date, Time, Collection Type (Home/In-Clinic).
+After collecting details, summarize and confirm the booking.
 """
 
-# Scheduler to send reminders
+# Reminder function
 def reminder_job():
     now = datetime.now()
     upcoming_time = (now + timedelta(hours=1)).strftime('%H:%M')
     today = now.strftime('%d-%m-%Y')
     cursor.execute("SELECT * FROM bookings WHERE date=? AND time=?", (today, upcoming_time))
-    rows = cursor.fetchall()
-    for row in rows:
-        send_sms_reminder(row[1], row[2], row[3], row[4], row[5], row[6])
+    for row in cursor.fetchall():
+        send_sms_reminder(*row[1:])
 
 def send_sms_reminder(phone, city, test, date, time, collection):
     msg = f"Reminder: Your {test} is scheduled for {date} at {time} ({collection}) in {city}."
     url = "https://www.fast2sms.com/dev/bulkV2"
-    querystring = {
+    headers = {'cache-control': "no-cache"}
+    params = {
         "authorization": SMS_KEY,
         "message": msg,
         "language": "english",
         "route": "q",
         "numbers": phone
     }
-    headers = {'cache-control': "no-cache"}
-    response = requests.get(url, headers=headers, params=querystring)
-    print("Reminder sent:", response.status_code)
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        print("Reminder sent:", res.status_code)
+    except Exception as e:
+        print("SMS failed:", e)
 
+# Start scheduler
 scheduler = BackgroundScheduler()
 scheduler.add_job(reminder_job, 'interval', minutes=30)
 scheduler.start()
 
-@app.get("/", response_class=JSONResponse)
-async def root():
-    return {"message": "AI HealthCall+ running."}
-
+# Exotel hits this route when a call starts
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(request: Request):
-    response = VoiceResponse()
-    response.say("Hello! This is Cosmo from Redcliffe Labs. Let's book your diagnostic test.")
-    connect = Connect()
-    connect.stream(url='wss://cute-cups-roll.loca.lt/media-stream')
-    response.append(connect)
-    return HTMLResponse(content=str(response), media_type="application/xml")
+    return HTMLResponse(content="""
+        <Response>
+            <Say>Hello! This is Cosmo from Redcliffe Labs. Let's book your diagnostic test.</Say>
+            <Connect>
+                <Stream url="wss://cute-cups-roll.loca.lt/media-stream" />
+            </Connect>
+        </Response>
+    """, media_type="application/xml")
 
+# WebSocket endpoint for OpenAI real-time voice
 @app.websocket("/media-stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -105,11 +105,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
             elif data.get("event") == "start":
                 print("Stream started.")
-            elif data.get("event") == "stop":*
+            elif data.get("event") == "stop":
                 print("Stream stopped.")
 
+# Setup OpenAI audio session
 async def initialize_session(openai_ws):
-    session_update = {
+    await openai_ws.send(json.dumps({
         "type": "session.update",
         "session": {
             "turn_detection": {"type": "server_vad"},
@@ -118,11 +119,11 @@ async def initialize_session(openai_ws):
             "voice": "alloy",
             "instructions": SYSTEM_MESSAGE,
             "modalities": ["text", "audio"],
-            "temperature": 0.8,
+            "temperature": 0.8
         }
-    }
-    await openai_ws.send(json.dumps(session_update))
+    }))
 
+# Run server
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=PORT)
